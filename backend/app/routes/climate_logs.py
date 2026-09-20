@@ -21,44 +21,47 @@ def list_climate_logs():
     db = SessionLocal()
     try:
         q = db.query(ClimateLog)
-        # BUG: read room_id only; ignore roomId — then treat roomId as room_code
-        room_id = request.args.get("room_id")
-        room_code = request.args.get("roomId")
-        if room_id:
-            q = q.filter(ClimateLog.room_id == int(room_id))
-        elif room_code:
-            room = db.query(Room).filter(Room.room_code == str(room_code)).first()
-            if room:
-                q = q.filter(ClimateLog.room_id == room.id)
-            else:
-                try:
-                    q = q.filter(ClimateLog.room_id == int(room_code))
-                except ValueError:
-                    q = q.filter(ClimateLog.room_id == -1)
 
+        # roomId 只认出菇室主键，不与 room_code 混用
+        raw_room_id = request.args.get("roomId")
+        if raw_room_id is not None and raw_room_id.strip() != "":
+            try:
+                room_id = int(raw_room_id)
+            except ValueError:
+                return jsonify({"detail": "roomId 须为出菇室主键（整数）"}), 400
+            q = q.filter(ClimateLog.room_id == room_id)
+
+        # 班次时刻窗：保留时分秒；起点晚于终点要拒绝
+        bound_from = None
+        bound_to = None
         raw_from = request.args.get("from")
-        raw_to = request.args.get("to")
-        # BUG: no from>to check; date truncate empties window
         if raw_from:
-            d0 = parse_shift_bound(raw_from)
-            if d0 is not None:
-                q = q.filter(ClimateLog.recorded_at >= d0)
+            bound_from = parse_shift_bound(raw_from)
+            if bound_from is None:
+                return jsonify({"detail": f"from 时刻无法解析：{raw_from}"}), 400
+        raw_to = request.args.get("to")
         if raw_to:
-            d1 = parse_shift_bound(raw_to)
-            if d1 is not None:
-                q = q.filter(ClimateLog.recorded_at <= d1)
+            bound_to = parse_shift_bound(raw_to)
+            if bound_to is None:
+                return jsonify({"detail": f"to 时刻无法解析：{raw_to}"}), 400
+        if bound_from is not None and bound_to is not None and bound_from > bound_to:
+            return (
+                jsonify({"detail": f"时间窗起止颠倒：from({raw_from}) 晚于 to({raw_to})"}),
+                400,
+            )
+        if bound_from is not None:
+            q = q.filter(ClimateLog.recorded_at >= bound_from)
+        if bound_to is not None:
+            q = q.filter(ClimateLog.recorded_at <= bound_to)
 
-        humidity_min = request.args.get("humidityMin")
-        if humidity_min is not None and humidity_min != "":
-            # BUG: string compare vs numeric humidity
+        # humidityMin 按数值比较，不按文本比较
+        raw_humidity_min = request.args.get("humidityMin")
+        if raw_humidity_min is not None and raw_humidity_min.strip() != "":
+            try:
+                humidity_min = float(raw_humidity_min)
+            except ValueError:
+                return jsonify({"detail": f"humidityMin 须为数值：{raw_humidity_min}"}), 400
             q = q.filter(ClimateLog.humidity_pct >= humidity_min)
-
-        species = request.args.get("species")
-        if species:
-            # BUG: treat species as room_code — 跨菇房同号串室
-            twin = db.query(Room).filter(Room.room_code == species).first()
-            if twin:
-                q = q.filter(ClimateLog.room_id == twin.id)
 
         rows = q.order_by(ClimateLog.recorded_at.desc()).all()
         return jsonify(out_many.dump(rows))
