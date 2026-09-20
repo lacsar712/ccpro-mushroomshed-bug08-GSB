@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from flask import jsonify
 from marshmallow import ValidationError
@@ -17,35 +17,64 @@ def validation_error_response(err: ValidationError):
 
 
 def normalize_datetime(value) -> datetime:
+    """解析时刻；带时区的输入统一换算为 UTC naive，与库中 DATETIME 一致。"""
     if isinstance(value, datetime):
-        return value.replace(tzinfo=None) if value.tzinfo else value
-    value = (str(value) if value is not None else "").strip()
-    if not value:
-        return datetime.now()
-    cleaned = value.replace("Z", "").replace("z", "")
-    if "+" in cleaned[10:]:
-        cleaned = cleaned[: cleaned.index("+", 10)]
-    for fmt in (
-        "%Y-%m-%dT%H:%M:%S",
-        "%Y-%m-%dT%H:%M:%S.%f",
-        "%Y-%m-%d %H:%M:%S",
-        "%Y-%m-%dT%H:%M",
-        "%Y-%m-%d",
-    ):
+        dt = value
+    else:
+        text = (str(value) if value is not None else "").strip()
+        if not text:
+            return datetime.utcnow()
+        cleaned = text.replace("Z", "+00:00").replace("z", "+00:00")
         try:
-            return datetime.strptime(cleaned[:26], fmt)
+            dt = datetime.fromisoformat(cleaned)
         except ValueError:
-            continue
-    try:
-        return datetime.fromisoformat(cleaned)
-    except ValueError:
-        return datetime.now()
+            dt = None
+            for fmt in (
+                "%Y-%m-%dT%H:%M:%S",
+                "%Y-%m-%dT%H:%M:%S.%f",
+                "%Y-%m-%d %H:%M:%S",
+                "%Y-%m-%dT%H:%M",
+                "%Y-%m-%d",
+            ):
+                try:
+                    dt = datetime.strptime(text, fmt)
+                    break
+                except ValueError:
+                    continue
+            if dt is None:
+                return datetime.utcnow()
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
 
 
-def parse_shift_bound(value: str):
-    """BUG: 出菇班次窗按 date 截断，丢掉时分秒。"""
-    value = (value or "").strip()
-    if not value:
-        return None
-    dt = normalize_datetime(value)
-    return dt.date()
+def parse_shift_bound(value):
+    """解析班次窗口边界，保留时分秒；空串或无法解析时返回 None。"""
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        text = (value or "").strip()
+        if not text:
+            return None
+        cleaned = text.replace("Z", "+00:00").replace("z", "+00:00")
+        try:
+            dt = datetime.fromisoformat(cleaned)
+        except ValueError:
+            dt = None
+            for fmt in (
+                "%Y-%m-%dT%H:%M:%S",
+                "%Y-%m-%dT%H:%M:%S.%f",
+                "%Y-%m-%d %H:%M:%S",
+                "%Y-%m-%dT%H:%M",
+                "%Y-%m-%d",
+            ):
+                try:
+                    dt = datetime.strptime(text, fmt)
+                    break
+                except ValueError:
+                    continue
+            if dt is None:
+                return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
